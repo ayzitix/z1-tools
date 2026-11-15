@@ -2,7 +2,7 @@
 
 A worker-mode `tools` service for `z1`: a small, well-behaved tool stack an
 agent graph can drive — read, write, patch, search, shell, background tasks,
-read-only git and a workspace todo list. It is an example module, not host code:
+read-only git and a workspace todo list. It is a self-contained module, not host code:
 the entry is plain ESM with `node:` builtins only, and the manifest's grant
 decides how far it can reach.
 
@@ -10,6 +10,35 @@ decides how far it can reach.
 > `apply_patch`, `move`, `mkdir` and `shell` run as soon as the model asks, so
 > only point this module at a workspace you are willing to let a model rewrite.
 > The capability grant is the only boundary.
+
+## Repository and install
+
+Current version: **0.1.3** (`manifest.json`, id `com.z1.tools`).
+
+```sh
+git clone https://github.com/ayzitix/z1-tools ~/Projects/z1-tools
+```
+
+The module is plain ESM with `node:` builtins only — there is nothing to build
+and no runtime dependency to install. Point `z1` at the clone:
+
+```sh
+z1 module propose ~/Projects/z1-tools --modules-dir /tmp/z1-modules
+z1 module approve com.z1.tools --modules-dir /tmp/z1-modules
+z1 module list --modules-dir /tmp/z1-modules
+z1 run graph.json --modules-dir /tmp/z1-modules --approve ask
+```
+
+Proposing copies the directory into the module store, so the installed copy
+(under `~/.local/share/z1/modules` by default) is separate from the clone:
+editing the clone does not change a module that was already proposed — propose
+it again to pick up the changes. The `--modules-dir /tmp/z1-modules` above is
+just an example; pass your own store if you use one.
+
+> **The approved grant is broad.** As shipped the manifest asks for
+> `fs.read`/`fs.write` on `/**` and `process.spawn` on `*`: every absolute path
+> and every executable. Narrow it in `manifest.json` if you only need a corner
+> of the disk (see [Approve](#2-approve)).
 
 Every tool takes a JSON object and returns **text**. There is no binary
 transfer: no blob upload, no base64 payloads, no file attachments. Binary and
@@ -271,7 +300,7 @@ Known limitations, stated rather than hidden:
 ## 1. Propose
 
 ```sh
-z1 module propose z1/examples/modules/z1-tools --modules-dir /tmp/z1-modules
+z1 module propose ~/Projects/z1-tools --modules-dir /tmp/z1-modules
 ```
 
 Proposing copies the directory into the store, hashes it, and prints the id, the
@@ -306,3 +335,11 @@ z1 run graph.json --modules-dir /tmp/z1-modules --approve ask
 
 Any graph node that calls the run's tool service (for example `z1.agent.loop`)
 now sees the table above.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The module declares `"license": "MIT"` in
+`manifest.json`; the copyright holder is `ayzitix` (2026).
+
+No test suite is included in this repository, and the module is a tools service
+only: it ships no host code and no dependencies.
