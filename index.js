@@ -46,7 +46,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'read',
     description:
-      'Read a UTF-8 text file as numbered lines (`1| text`); `offset` is 1-based and `limit` defaults to 2000. An answer stops near 100k characters (one line is clipped at 2000) and a cut window names the next `offset`; files over 1 MiB and binary files are refused.',
+      'Read a UTF-8 text file as numbered lines (`1| text`); `offset` is 1-based and `limit` defaults to 2000. An answer stops near 100k characters (one line is clipped at 2000) and a cut window names the next `offset`; files over 1 MiB and binary files are refused; the z1 session store (`z1/` carrying `.z1-sessions`) is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -61,7 +61,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'write',
     description:
-      'Write a UTF-8 text file: the content goes to a sibling temp file that is renamed into place, parent directories are created and an existing file keeps its mode. Refuses to overwrite a file this process has not read, or that changed since that read; a hardlinked target is written in place so its other links stay in sync.',
+      'Write a UTF-8 text file: the content goes to a sibling temp file that is renamed into place, parent directories are created and an existing file keeps its mode. Refuses to overwrite a file this process has not read, or that changed since that read; a hardlinked target is written in place so its other links stay in sync; the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -75,7 +75,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'edit',
     description:
-      'Replace exact text in a file: `oldText` must occur once unless `replaceAll` is true. Matching accepts LF or the file\'s own line endings and untouched lines keep their bytes, so a mixed-EOL file is unchanged elsewhere; whitespace-only `oldText`, binary files and an identical replacement are handled explicitly (`no change`), and Claude-style `old_string`/`new_string` are accepted aliases.',
+      'Replace exact text in a file: `oldText` must occur once unless `replaceAll` is true. Matching accepts LF or the file\'s own line endings and untouched lines keep their bytes, so a mixed-EOL file is unchanged elsewhere; whitespace-only `oldText`, binary files and an identical replacement are handled explicitly (`no change`), and Claude-style `old_string`/`new_string` are accepted aliases; the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -98,7 +98,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'apply_patch',
     description:
-      'Apply SEARCH/REPLACE blocks to existing files. Markers start at column 0, every block is matched against the original file (not text an earlier block inserted) and must match once; all blocks are applied in memory and the files swapped in atomically, so a failure leaves every original untouched.',
+      'Apply SEARCH/REPLACE blocks to existing files. Markers start at column 0, every block is matched against the original file (not text an earlier block inserted) and must match once; all blocks are applied in memory and the files swapped in atomically, so a failure leaves every original untouched; a target in the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -115,7 +115,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'list',
     description:
-      'List a directory as `dir p`, `file p (size)` or `link p`; a file path returns that one row. Names are relative to `path`, ignored entries are labelled `(ignored)`, and the walk is bounded to 8 levels and 5000 entries with the cap reported.',
+      'List a directory as `dir p`, `file p (size)` or `link p`; a file path returns that one row. Names are relative to `path`, ignored entries are labelled `(ignored)`, the walk is bounded to 8 levels and 5000 entries with the cap reported, and the marked z1 session store shows once as `(z1 state, ignored)` without descending.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -130,7 +130,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'glob',
     description:
-      'Find files by glob under a root, which defaults to the workspace. `*` and `?` stop at `/` while `**` crosses it, a pattern without `/` matches the basename at any depth, and `{a,b}`/`[...]` work; `.gitignore` and noise directories are skipped, results are sorted and capped at 1000 paths or 64 KiB, and absolute patterns are rejected.',
+      'Find files by glob under a root, which defaults to the workspace. `*` and `?` stop at `/` while `**` crosses it, a pattern without `/` matches the basename at any depth, and `{a,b}`/`[...]` work; `.gitignore` and noise directories are skipped (as is the marked z1 session store, counted ignored), results are sorted and capped at 1000 paths or 64 KiB, and absolute patterns are rejected.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -147,7 +147,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'grep',
     description:
-      'Search file contents with a JavaScript regular expression, case-sensitive by default (`caseSensitive: false` opts in); results are `path:line: text` and context lines `path-line- text`. `.gitignore` and noise directories are skipped, as are binary and >1 MiB files (counted in the summary); lines are clipped near 400 characters and a result is capped at 64 KiB.',
+      'Search file contents with a JavaScript regular expression, case-sensitive by default (`caseSensitive: false` opts in); results are `path:line: text` and context lines `path-line- text`. `.gitignore`, noise directories and the marked z1 session store are skipped, as are binary and >1 MiB files (all counted in the summary); lines are clipped near 400 characters and a result is capped at 64 KiB.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -170,7 +170,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'tree',
     description:
-      'Render a compact directory tree with file sizes and symlink labels; ignored entries appear as `(ignored)` and depth, entry and byte caps are reported. Depth defaults to 3.',
+      'Render a compact directory tree with file sizes and symlink labels; ignored entries appear as `(ignored)` (the marked z1 session store as `(z1 state, ignored)`) and depth, entry and byte caps are reported. Depth defaults to 3.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -195,7 +195,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'mkdir',
     description:
-      'Create a directory, with parents unless `recursive: false`. An existing directory reports `exists`; an existing file is refused.',
+      'Create a directory, with parents unless `recursive: false`. An existing directory reports `exists`; an existing file and the z1 session store are refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -218,7 +218,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'move',
     description:
-      'Move or rename one entry inside the workspace, creating the destination parent; a symlink moves as the link itself and an existing destination needs `overwrite: true`. Same-device moves rename; across devices the entry is copied and the source removed, so an interruption can leave both.',
+      'Move or rename one entry inside the workspace, creating the destination parent; a symlink moves as the link itself and an existing destination needs `overwrite: true`. Same-device moves rename; across devices the entry is copied and the source removed, so an interruption can leave both. Either end in the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,

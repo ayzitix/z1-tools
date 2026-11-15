@@ -103,6 +103,25 @@ workspace (`notes/a.txt`, `.` for the root) and an absolute path otherwise.
 resolved and contained, the last component is kept as written, so they act on
 the entry the model named (a link is a link) rather than on its target.
 
+### z1's own state
+
+A project's transcripts live in `<workspace>/z1`, and the marker file
+`.z1-sessions` in it says the folder is z1's, not the project's (the session
+package's default is `<repo>/z1`; see `@z1/session/paths`). These tools treat
+that folder as z1's own state: `list` and `tree` show it once as
+`z1 (z1 state, ignored)` and never descend, `glob` and `grep` skip it and count
+it as one ignored path, a base rooted inside it answers
+`(z1 state: not project content; transcripts use /sessions)`, and `read`,
+`write`, `edit`, `apply_patch`, `mkdir` and either end of `move` refuse it with
+`… is z1's own session store; transcripts are managed with /sessions, not file
+tools`. `stat` still reports its metadata, so size and mtime remain visible.
+
+Only a `z1/` carrying the marker is affected: a repository that genuinely has a
+`z1/` source directory (the SDK itself) keeps it fully visible and writable. The
+detection only covers the default `<workspace>/z1`; a store moved elsewhere by
+`Z1_SESSIONS_DIR` is not recognised and stays reachable by file tools, so the
+manifest grant is the only bound there.
+
 ### Line endings and encoding
 
 Files are read and written as UTF-8. `read` does not rewrite anything;
@@ -195,7 +214,8 @@ Absolute patterns are rejected — pass a relative `pattern` plus a `path` root.
 
 `.gitignore` is honoured from the search root and from every directory visited
 (directory patterns, `!` negation and `**` included), and `.git`, `node_modules`
-and `.z1/out` are always pruned. `glob` and `grep` skip those silently and say
+and `.z1/out` are always pruned, as is a marked `z1/` session store. `glob` and
+`grep` skip those silently and say
 how many paths they skipped; `list` and `tree` show the entry once as
 `(ignored)` and never descend. Caps are counted in files, not directories.
 
