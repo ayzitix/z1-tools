@@ -13,7 +13,7 @@ decides how far it can reach.
 
 ## Repository and install
 
-Current version: **0.1.3** (`manifest.json`, id `com.z1.tools`).
+Current version: **0.1.6** (`manifest.json`, id `com.z1.tools`).
 
 ```sh
 git clone https://github.com/ayzitix/z1-tools ~/Projects/z1-tools
@@ -51,9 +51,9 @@ channel, and a command whose output is not text is reported as
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `read` | `{ path, offset?, limit? }` | numbered lines `1\| text`; a cut window ends with `… (truncated: lines a-b of n; call read with offset=n+1)` |
-| `write` | `{ path, content }` | `wrote <path> (<n> bytes[, kept mode 0644][, in place: hardlinked file keeps its other links])` |
-| `edit` | `{ path, oldText, newText, replaceAll? }` | `edited <path> (<n> replacements)` or `no change: <path> (…)` |
-| `apply_patch` | `{ patch }` | `patched <n> blocks in <m> files`, then `<path> (+a -r block lines)` or `<path> (no change)` |
+| `write` | `{ path, content, preserveLinks? }` | `wrote <path> (<n> bytes[, broke N hard links][, kept mode 0644][, in place: kept N hard links])` |
+| `edit` | `{ path, oldText, newText, replaceAll?, preserveLinks? }` | `edited <path> (<n> replacements[, broke N hard links][, kept mode 0644][, in place: kept N hard links])` or `no change: <path> (…)` |
+| `apply_patch` | `{ patch, preserveLinks? }` | `patched <n> blocks in <m> files`, then `<path> (+a -r block lines[, broke N hard links][, in place: kept N hard links])` or `<path> (no change)` |
 | `list` | `{ path, recursive?, maxDepth? }` | `dir p`, `file p (size)`, `link p`, each optionally `(ignored)` |
 | `glob` | `{ pattern, path? }` | sorted matching paths, one per line |
 | `grep` | `{ pattern, path?, glob?, caseSensitive?, context?, maxResults? }` | `path:line: text`, context as `path-line- text`, then a summary |
@@ -111,19 +111,26 @@ package's default is `<repo>/z1`; see `@z1/session/paths`). These tools treat
 that folder as z1's own state: `list` and `tree` show it once as
 `z1 (z1 state, ignored)` and never descend, `glob` and `grep` skip it and count
 it as one ignored path, and a base rooted inside it answers
-`(z1 state: not project content; transcripts use /sessions)`. Reading the store
-is allowed: `read` returns its files (so a session's own `meta.json` or
-transcript can be inspected) and `stat` still reports its metadata, so size and
-mtime remain visible. Changing it is not: `write`, `edit`, `apply_patch`,
-`mkdir` and either end of `move` refuse it with `… is z1's own session store;
-transcripts are managed with /sessions, not file tools`, so the tools never add,
-replace or delete a byte in it.
+`(z1 state: not project content; transcripts use /sessions)`.
 
-Only a `z1/` carrying the marker is affected: a repository that genuinely has a
-`z1/` source directory (the SDK itself) keeps it fully visible and writable. The
-detection only covers the default `<workspace>/z1`; a store moved elsewhere by
-`Z1_SESSIONS_DIR` is not recognised and stays reachable by file tools, so the
-manifest grant is the only bound there.
+Reading it is allowed: `read` returns its files (so a session's own `meta.json`
+or transcript can be inspected) and `stat` still reports its metadata, so size
+and mtime remain visible. `write`, `edit`, `apply_patch`, `mkdir` and either end
+of `move` refuse it with `… is z1's own session store; transcripts are managed
+with /sessions, not file tools`. `shell` is **not** filtered: it can still
+modify the store (and anything else the grant reaches), so there the prompt, not
+the guard, is the only protection.
+
+The verdict is re-read on every call: `<workspace>/z1/.z1-sessions` is
+re-`stat`ed by each guard and never memoised, so a store created or removed
+mid-process is refused or released immediately. The extra `stat` costs about
+60 µs per check. Only a `z1/` carrying the marker is affected: a repository
+that genuinely has a `z1/` source directory (the SDK itself) keeps it fully
+visible and writable. Detection only covers the default `<workspace>/z1`. A
+store moved elsewhere by `Z1_SESSIONS_DIR` (or by the session package's
+fallback root outside the workspace), a renamed store, and one reached through
+the real path behind a symlinked `z1/` are not recognised and stay reachable by
+file tools, so the manifest grant is the only bound there.
 
 ### Line endings and encoding
 
@@ -144,7 +151,10 @@ way: rewrite it with `write` instead of editing it.
 `write`, `edit`, `apply_patch` and `todo.write` never truncate the target: the
 content goes to a sibling temp file (`<name>.z1-tmp-<pid>-<rand>`) and is
 renamed into place, so a failure leaves the old bytes. An existing file keeps
-its mode; `todo.write` forces `0600` and creates `.z1` as `0700`.
+its mode; `todo.write` forces `0600` and creates `.z1` as `0700`. The one
+exception is the opt-in `preserveLinks: true` on a hardlinked target, which
+rewrites the inode in place (that is what was asked for) and is therefore not
+atomic.
 
 `write` additionally refuses to overwrite a file this process never read, or one
 whose bytes changed since that read (`write: read "<path>" before overwriting
@@ -154,10 +164,16 @@ workspace and resolved path, so a restart simply asks for a fresh read. This
 catches the stale-context mistake, not a concurrent writer: the hash and the
 rename are separate syscalls (see the TOCTOU note below).
 
-A target with more than one hardlink is the exception to the rename path: it is
-written through its inode so the other names stay in sync, and the result says
-`in place: hardlinked file keeps its other links`. That trades rename atomicity
-for link fidelity on that one file.
+A target with more than one hardlink takes that same rename path by default:
+the target gets a new inode and the other names keep the old bytes, so the write
+stays atomic but the link is gone — the result says `broke N hard links`. That
+default is deliberate: a link made outside the workspace would otherwise be a
+way to rewrite a file the guard protects through a writable name.
+`preserveLinks: true` opts back into the in-place rewrite, which updates every
+name on the inode, gives up rename atomicity for that one file, and says
+`in place: kept N hard links`. The policy is shared by `write`, `edit` and
+`apply_patch`; `apply_patch` reports the count per file, after its
+`+a -r block lines`.
 
 `apply_patch` prepares every changed file first and renames them all in one
 helper child; a failure restores the previous bytes, mode and mtime of every
@@ -307,16 +323,19 @@ Known limitations, stated rather than hidden:
   racing between the hash check and the rename, can still surprise the tool; no
   Node API closes that window. The tools fail loudly rather than assuming the
   check was atomic.
-- **Hardlinks.** A hardlinked target is written in place, so its other names
-  change with it and the write is not atomic. `apply_patch` keeps the links too.
+- **Hardlinks.** By default a hardlinked target is renamed like any other file,
+  so after a `write`, `edit` or `apply_patch` its other names still hold the old
+  bytes and the result reports `broke N hard links`. `preserveLinks: true`
+  rewrites the inode instead: every name sees the new bytes and that write is
+  no longer atomic.
 - **`move` across devices.** `rename` is atomic within one filesystem; an
   `EXDEV` move copies to a unique temp name and then deletes, so an interruption
   can leave both copies. A source that cannot be removed after a successful copy
   is reported, never hidden.
 - **Windows.** `rename` onto an existing file is refused there, so the atomic
   writers fall back to remove-then-rename (`EEXIST`/`EPERM`): the file is still
-  never truncated in place, but the swap is briefly non-atomic. An `overwrite`
-  move fails cleanly instead of replacing.
+  never truncated in place by the default path, but the swap is briefly
+  non-atomic. An `overwrite` move fails cleanly instead of replacing.
 - **Special files.** A FIFO, socket or device is reported as `other` with its
   kind in parentheses; nothing here reads or writes one.
 

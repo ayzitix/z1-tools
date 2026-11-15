@@ -14,8 +14,10 @@
  * `edit`, `apply_patch` and `todo.write` prepare a sibling temp file and rename
  * it into place, so a failure leaves the old bytes. `write` additionally
  * refuses to replace a file this process has not read and that has not changed
- * since, and a hardlinked target is written in place so its other links stay in
- * sync. `edit` also accepts Claude Code's `old_string`/`new_string` aliases.
+ * since; a hardlinked target is renamed like any other file by default, which
+ * breaks its other links (they keep the old bytes), and `preserveLinks: true`
+ * asks for the in-place rewrite that keeps them. `edit` also accepts Claude
+ * Code's `old_string`/`new_string` aliases.
  *
  * v1 asks for no approvals. The manifest's capability grant is the only
  * boundary: `fs /**`, `process ["*"]`, and optional `net`. Do not point this
@@ -61,7 +63,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'write',
     description:
-      'Write a UTF-8 text file: the content goes to a sibling temp file that is renamed into place, parent directories are created and an existing file keeps its mode. Refuses to overwrite a file this process has not read, or that changed since that read; a hardlinked target is written in place so its other links stay in sync; the z1 session store is refused.',
+      'Write a UTF-8 text file: the content goes to a sibling temp file that is renamed into place, parent directories are created and an existing file keeps its mode. Refuses to overwrite a file this process has not read, or that changed since that read; a hardlinked target is renamed too, which breaks its other links (they keep the old bytes) unless `preserveLinks: true` asks for an in-place rewrite that keeps them (the result says which happened); the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -69,6 +71,11 @@ const TOOL_SCHEMAS = [
       properties: {
         path: { type: 'string', description: PATH_DESCRIPTION },
         content: { type: 'string', description: 'Full file content.' },
+        preserveLinks: {
+          type: 'boolean',
+          description:
+            'Write through a hardlinked file\'s inode so its other links see the new bytes (default false: the file is replaced atomically and the other links keep the old bytes).',
+        },
       },
     },
   },
@@ -92,13 +99,18 @@ const TOOL_SCHEMAS = [
           type: 'boolean',
           description: 'Replace every occurrence (default false: the match must be unique).',
         },
+        preserveLinks: {
+          type: 'boolean',
+          description:
+            'Write through a hardlinked file\'s inode so its other links see the new bytes (default false: the file is replaced atomically and the other links keep the old bytes).',
+        },
       },
     },
   },
   {
     name: 'apply_patch',
     description:
-      'Apply SEARCH/REPLACE blocks to existing files. Markers start at column 0, every block is matched against the original file (not text an earlier block inserted) and must match once; all blocks are applied in memory and the files swapped in atomically, so a failure leaves every original untouched; a target in the z1 session store is refused.',
+      'Apply SEARCH/REPLACE blocks to existing files. Markers start at column 0, every block is matched against the original file (not text an earlier block inserted) and must match once; all blocks are applied in memory and the files swapped in atomically, so a failure leaves every original untouched; a hardlinked target is swapped too, which breaks its other links (they keep the old bytes) unless `preserveLinks: true` asks for an in-place rewrite that keeps them; a target in the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -108,6 +120,11 @@ const TOOL_SCHEMAS = [
           type: 'string',
           description:
             'A path line, then `<<<<<<< SEARCH`, the exact text, `=======`, the replacement, `>>>>>>> REPLACE`; a following block without a path continues the same file. `*** Begin Patch`/`*** End Patch` and code fences are optional. `*** Add/Delete/Move File` and `@@` hunks are not supported (create files with `write`).',
+        },
+        preserveLinks: {
+          type: 'boolean',
+          description:
+            'Write through a hardlinked file\'s inode so its other links see the new bytes (default false: files are renamed into place and the other links keep the old bytes).',
         },
       },
     },

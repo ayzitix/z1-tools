@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "com.z1.tools",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "title": "z1 tools",
   "description": "Filesystem, shell, git and todo tools for z1 workers",
   "author": "z1",
