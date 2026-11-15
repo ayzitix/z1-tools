@@ -46,7 +46,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'read',
     description:
-      'Read a UTF-8 text file as numbered lines (`1| text`); `offset` is 1-based and `limit` defaults to 2000. An answer stops near 100k characters (one line is clipped at 2000) and a cut window names the next `offset`; files over 1 MiB and binary files are refused; the z1 session store (`z1/` carrying `.z1-sessions`) is refused.',
+      'Read a UTF-8 text file as numbered lines (`1| text`); `offset` is 1-based and `limit` defaults to 2000. An answer stops near 100k characters (one line is clipped at 2000) and a cut window names the next `offset`; files over 1 MiB and binary files are refused; reading the z1 session store (`z1/` carrying `.z1-sessions`) is allowed, changing it is not.',
     parameters: {
       type: 'object',
       additionalProperties: false,

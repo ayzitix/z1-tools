@@ -110,11 +110,14 @@ A project's transcripts live in `<workspace>/z1`, and the marker file
 package's default is `<repo>/z1`; see `@z1/session/paths`). These tools treat
 that folder as z1's own state: `list` and `tree` show it once as
 `z1 (z1 state, ignored)` and never descend, `glob` and `grep` skip it and count
-it as one ignored path, a base rooted inside it answers
-`(z1 state: not project content; transcripts use /sessions)`, and `read`,
-`write`, `edit`, `apply_patch`, `mkdir` and either end of `move` refuse it with
-`… is z1's own session store; transcripts are managed with /sessions, not file
-tools`. `stat` still reports its metadata, so size and mtime remain visible.
+it as one ignored path, and a base rooted inside it answers
+`(z1 state: not project content; transcripts use /sessions)`. Reading the store
+is allowed: `read` returns its files (so a session's own `meta.json` or
+transcript can be inspected) and `stat` still reports its metadata, so size and
+mtime remain visible. Changing it is not: `write`, `edit`, `apply_patch`,
+`mkdir` and either end of `move` refuse it with `… is z1's own session store;
+transcripts are managed with /sessions, not file tools`, so the tools never add,
+replace or delete a byte in it.
 
 Only a `z1/` carrying the marker is affected: a repository that genuinely has a
 `z1/` source directory (the SDK itself) keeps it fully visible and writable. The
