@@ -13,7 +13,7 @@ decides how far it can reach.
 
 ## Repository and install
 
-Current version: **0.1.7** (`manifest.json`, id `com.z1.tools`).
+Current version: **0.1.8** (`manifest.json`, id `com.z1.tools`).
 
 ```sh
 git clone https://github.com/ayzitix/z1-tools ~/Projects/z1-tools
@@ -54,22 +54,22 @@ channel, and a command whose output is not text is reported as
 | `write` | `{ path, content }` | `wrote <path> (<n> bytes[, broke N hard links][, kept mode 0644])` |
 | `edit` | `{ path, oldText, newText, replaceAll? }` | `edited <path> (<n> replacements[, broke N hard links][, kept mode 0644])` or `no change: <path> (…)` |
 | `apply_patch` | `{ patch }` | `patched <n> blocks in <m> files`, then `<path> (+a -r block lines[, broke N hard links])` or `<path> (no change)` |
-| `list` | `{ path, recursive?, maxDepth? }` | `dir p`, `file p (size)`, `link p`, each optionally `(ignored)` |
-| `glob` | `{ pattern, path? }` | sorted matching paths, one per line |
-| `grep` | `{ pattern, path?, glob?, caseSensitive?, context?, maxResults? }` | `path:line: text`, context as `path-line- text`, then a summary |
-| `tree` | `{ path?, depth? }` | `├──`/`└──` tree with sizes and symlink labels |
+| `list` | `{ path, recursive?, maxDepth?, includeIgnored? }` | `dir p`, `file p (size)`, `link p`, `other p (fifo)`, each optionally `(ignored)` |
+| `glob` | `{ pattern, path?, includeIgnored? }` | sorted matching paths, one per line |
+| `grep` | `{ pattern, path?, glob?, caseSensitive?, context?, maxResults?, includeIgnored? }` | `path:line: text`, context as `path-line- text`, then a summary |
+| `tree` | `{ path?, depth?, includeIgnored? }` | `├──`/`└──` tree with sizes and symlink labels |
 | `stat` | `{ path }` | `type size mtime [mode] [nlink=N] path [-> target]` |
-| `mkdir` | `{ path, mode?, recursive? }` | `created <path>[ with mode 0755]` or `exists <path> (directory)` |
+| `mkdir` | `{ path, mode?, recursive? }` | `created <path>[ with mode 0755]` (the real mode after umask) or `exists <path> (directory)` |
 | `move` | `{ from, to, overwrite? }` | `moved <from> -> <to>[ (copied across devices)][, replaced the previous entry]` |
 | `shell` | `{ command, args?, cwd?, timeoutMs?, stdin?, env?, maxOutputBytes? }` | `exit <code>` / `killed <signal> (…)`, then stdout/stderr |
 | `process.start` | `{ command, args?, cwd?, env? }` | `started <id> — running (pid N)` and the next call to make |
 | `process.output` | `{ id, cursor?, limit? }` | status, cursor range, `---`, output text |
 | `process.kill` | `{ id, signal? }` | `killed (SIGTERM)` or `stopping (SIGTERM sent, pid N)` |
-| `process.list` | `{ all?, limit? }` | one row per task: status, age, output size, cwd, argv |
+| `process.list` | `{ all?, limit? }` | one row per task: status, age, output size, cwd, argv; `limit` bounds finished rows with or without `all` |
 | `git.status` | `{ maxBytes? }` | `branch … \| staged N unstaged N untracked N conflicts N`, then `XY path` |
 | `git.diff` | `{ path?, mode?, staged?, ref?, untracked?, maxBytes? }` | stat (the default), patch, numstat or name-status, plus an untracked section |
 | `git.log` | `{ path?, maxCount?, ref?, author?, since?, merges?, maxBytes? }` | `hash  ISO date  author  subject`, newest first (`limit` is an alias of `maxCount`) |
-| `system.info` | `{}` | six lines: os, node, shell, now, workspace, git |
+| `system.info` | `{}` | six lines: os, node, shell (base name and dialect, e.g. `zsh (POSIX)`), now, workspace, git |
 | `todo.write` | `{ items: [{ text, status? }] }` | `wrote .z1/todos.json (<n> items, <previous state>)` |
 | `todo.read` | `{}` | a count header and `[ ] 1. text` lines |
 
@@ -180,9 +180,17 @@ is not filtered and can still rewrite the shared inode directly. The policy is
 shared by `write`, `edit` and `apply_patch`; `apply_patch` reports the count per
 file, after its `+a -r block lines`.
 
-`apply_patch` prepares every changed file first and renames them all in one
-helper child; a failure restores the previous bytes, mode and mtime of every
-file already swapped.
+`apply_patch` parses the whole patch and applies every block in memory before
+touching a file, so a parse or match failure changes nothing. Each changed file
+is then written to a sibling temp file and swapped in by its own atomic rename.
+If a later rename fails, files already swapped are restored on a **best-effort**
+basis — old bytes, mode and mtime are rewritten, the helper swallows a restore
+failure, and a restored file is a new inode, so hard links are not reattached.
+An interrupted commit can therefore leave a mix of old and new files; it is not
+a whole-patch rollback. Patch markers are recognised by prefix, not by context:
+a quoted line that begins with `*** Begin Patch`, `*** End Patch`, `<<<<<<<` or
+`>>>>>>>` is read as an envelope marker, so text containing such a line cannot
+be patched in — rewrite the whole file with `write` instead.
 
 ### Todo list
 
@@ -222,7 +230,9 @@ closing z1 kills it.
   signal. A reply of `stopping` means the exit has not been observed yet — read
   it again with `process.output`.
 - `process.list` shows running tasks plus the last 5 finished ones; `all: true`
-  includes every finished task and `limit` (1–200) bounds them.
+  includes every finished task, and `limit` (1–200) bounds the finished rows
+  whether or not `all` is set (the newest are kept), with the omitted count
+  printed.
 - `process.start` merges `env` over the inherited allowlist and rejects a
   non-string argument or variable instead of dropping it silently. A command
   that fails instantly (port taken, missing binary) is reported as exited,
@@ -236,12 +246,16 @@ is matched against the basename at any depth (`*.md` finds `docs/a/b.md`); a
 pattern containing `/` is matched against the path relative to the root.
 Absolute patterns are rejected — pass a relative `pattern` plus a `path` root.
 
-`.gitignore` is honoured from the search root and from every directory visited
-(directory patterns, `!` negation and `**` included), and `.git`, `node_modules`
-and `.z1/out` are always pruned, as is a marked `z1/` session store. `glob` and
-`grep` skip those silently and say
-how many paths they skipped; `list` and `tree` show the entry once as
-`(ignored)` and never descend. Caps are counted in files, not directories.
+`.gitignore` is honoured from the repository root (the nearest ancestor with a
+`.git` entry) down to the search root, and from every directory visited
+(directory patterns, `!` negation and `**` included), so a search of `src/`
+still skips a root `dist/` or `*.log`. `.git`, `node_modules` and `.z1/out` are
+always pruned, as is a marked `z1/` session store. `glob` and `grep` skip those
+silently and say how many paths they skipped; `list` and `tree` show the entry
+once as `(ignored)` and never descend. `includeIgnored: true` on any of the four
+tools disables both the ignore rules and the noise-directory prune (the marked
+session store is still hidden; the caps still apply). Caps are counted in files,
+not directories.
 
 `grep` compiles the pattern with the `u` flag, is **case-sensitive by default**
 (like ripgrep; `caseSensitive: false` opts in), returns `(no matches; …)` rather
@@ -284,8 +298,10 @@ capped at 64 KiB.
 - `stat`: one line; `mode` is the four-digit `lstat` mode with setuid/sticky
   bits (`0755`, `4755`), `nlink=N` appears only above 1, and `mtime` is local
   ISO 8601 with its UTC offset (`2026-11-15T16:09:54.553+02:00`).
-- `mkdir`: `mode` is an integer 0–4095, `recursive` defaults to true. An
-  existing directory is success (`exists … (directory)`); an existing file,
+- `mkdir`: `mode` is an integer 0–4095, `recursive` defaults to true. The result
+  reports the mode the directory really got, so a requested `0777` under umask
+  `022` says `with mode 0755`; the process umask is not visible to the worker.
+  An existing directory is success (`exists … (directory)`); an existing file,
   FIFO or device is refused; with `recursive: false` the parent must exist.
 - `move`: an existing destination needs `overwrite: true` — a replacement is
   never implied. A directory is never merged into an existing one.

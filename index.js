@@ -102,7 +102,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'apply_patch',
     description:
-      'Apply SEARCH/REPLACE blocks to existing files. Markers start at column 0, every block is matched against the original file (not text an earlier block inserted) and must match once; all blocks are applied in memory and the files swapped in atomically, so a failure leaves every original untouched; a binary target (a NUL or U+FFFD anywhere in the file) is refused and never re-encoded, a hardlinked target is swapped, which breaks its other links (they keep the old bytes) and is reported as `broke N hard link(s)`, and a target in the z1 session store is refused.',
+      'Apply SEARCH/REPLACE blocks to existing files. Markers start at column 0, every block is matched against the original file (not text an earlier block inserted) and must match once; all blocks are applied in memory and every changed file is written to a temp file first, so a parse or match failure changes nothing. Each file is then swapped in by one atomic rename; if a later rename fails, files already swapped are restored on a best-effort basis by rewriting their old bytes (that restore can itself fail and does not keep hard links), so an interrupted commit may leave a mix of old and new files. A binary target (a NUL or U+FFFD anywhere in the file) is refused and never re-encoded, a hardlinked target is swapped, which breaks its other links (they keep the old bytes) and is reported as `broke N hard link(s)`, and a target in the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -111,7 +111,7 @@ const TOOL_SCHEMAS = [
         patch: {
           type: 'string',
           description:
-            'A path line, then `<<<<<<< SEARCH`, the exact text, `=======`, the replacement, `>>>>>>> REPLACE`; a following block without a path continues the same file. `*** Begin Patch`/`*** End Patch` and code fences are optional. `*** Add/Delete/Move File` and `@@` hunks are not supported (create files with `write`).',
+            'A path line, then `<<<<<<< SEARCH`, the exact text, `=======`, the replacement, `>>>>>>> REPLACE`; a following block without a path continues the same file. `*** Begin Patch`/`*** End Patch` and code fences are optional. Because they are recognised by prefix and not by context, a quoted line that starts with `*** Begin Patch`, `*** End Patch`, `<<<<<<<` or `>>>>>>>` is read as an envelope marker, so text containing one cannot be patched in (use `write`). `*** Add/Delete/Move File` and `@@` hunks are not supported (create files with `write`).',
         },
       },
     },
@@ -119,7 +119,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'list',
     description:
-      'List a directory as `dir p`, `file p (size)` or `link p`; a file path returns that one row. Names are relative to `path`, ignored entries are labelled `(ignored)`, the walk is bounded to 8 levels and 5000 entries with the cap reported, and the marked z1 session store shows once as `(z1 state, ignored)` without descending.',
+      'List a directory as `dir p`, `file p (size)`, `link p` or `other p (fifo)`, `(socket)`, `(device)`, `(special)`; a file path returns that one row. Names are relative to `path`, ignored entries are labelled `(ignored)`, the walk is bounded to 8 levels and 5000 entries with the cap reported, and the marked z1 session store shows once as `(z1 state, ignored)` without descending. `.gitignore` files from the repository root down to `path` apply, so a listing of `src/` still honours a root `dist/` or `*.log`; `includeIgnored: true` shows ignored entries and noise directories anyway.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -128,13 +128,18 @@ const TOOL_SCHEMAS = [
         path: { type: 'string', description: PATH_DESCRIPTION },
         recursive: { type: 'boolean', description: 'Walk subdirectories (default false: one level).' },
         maxDepth: { type: 'integer', minimum: 1, maximum: 8, description: 'Levels to walk; implies recursion.' },
+        includeIgnored: {
+          type: 'boolean',
+          description:
+            'Show ignored entries and noise directories too (default false). `.gitignore` is not consulted at all, so `node_modules`, `.git` and `.z1/out` are listed and descended; the marked z1 session store is still pruned and the caps still apply.',
+        },
       },
     },
   },
   {
     name: 'glob',
     description:
-      'Find files by glob under a root, which defaults to the workspace. `*` and `?` stop at `/` while `**` crosses it, a pattern without `/` matches the basename at any depth, and `{a,b}`/`[...]` work; `.gitignore` and noise directories are skipped (as is the marked z1 session store, counted ignored), results are sorted and capped at 1000 paths or 64 KiB, and absolute patterns are rejected.',
+      'Find files by glob under a root, which defaults to the workspace. `*` and `?` stop at `/` while `**` crosses it, a pattern without `/` matches the basename at any depth, and `{a,b}`/`[...]` work; `.gitignore` (from the repository root down to the search root) and noise directories are skipped (as is the marked z1 session store, counted ignored), results are sorted and capped at 1000 paths or 64 KiB, ignored paths are counted in the summary, and absolute patterns are rejected. `includeIgnored: true` searches ignored paths and noise directories as well.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -145,13 +150,18 @@ const TOOL_SCHEMAS = [
           description: 'Glob relative to `path`, e.g. `src/**/*.ts` or `*.md`.',
         },
         path: { type: 'string', description: 'Root directory or file; defaults to the workspace.' },
+        includeIgnored: {
+          type: 'boolean',
+          description:
+            'Match ignored paths and noise directories too (default false). The marked z1 session store is still skipped; the 1000-path and 64 KiB caps still apply.',
+        },
       },
     },
   },
   {
     name: 'grep',
     description:
-      'Search file contents with a JavaScript regular expression, case-sensitive by default (`caseSensitive: false` opts in); results are `path:line: text` and context lines `path-line- text`. `.gitignore`, noise directories and the marked z1 session store are skipped, as are binary and >1 MiB files (all counted in the summary); a pattern over 512 characters or one whose shape can backtrack catastrophically (nested quantifiers such as `(a+)+`, ambiguous alternation, a large backreference) is rejected up front, lines over 16 000 characters are matched on the clipped head only, and matching stops after a 5 s budget with `grep: stopped after N ms; narrow the query`. Result lines are clipped near 400 characters and a result is capped at 64 KiB.',
+      'Search file contents with a JavaScript regular expression, case-sensitive by default (`caseSensitive: false` opts in); results are `path:line: text` and context lines `path-line- text`. `.gitignore` (from the repository root down to the search root), noise directories and the marked z1 session store are skipped, as are binary and >1 MiB files (all counted in the summary); `includeIgnored: true` searches ignored paths and noise directories too; a pattern over 512 characters or one whose shape can backtrack catastrophically (nested quantifiers such as `(a+)+`, ambiguous alternation, a large backreference) is rejected up front, lines over 16 000 characters are matched on the clipped head only, and matching stops after a 5 s budget with `grep: stopped after N ms; narrow the query`. Result lines are clipped near 400 characters and a result is capped at 64 KiB.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -168,13 +178,18 @@ const TOOL_SCHEMAS = [
           maximum: 200,
           description: 'Maximum matching lines; defaults to 200.',
         },
+        includeIgnored: {
+          type: 'boolean',
+          description:
+            'Search ignored paths and noise directories too (default false). The marked z1 session store and the binary/oversize rules still apply.',
+        },
       },
     },
   },
   {
     name: 'tree',
     description:
-      'Render a compact directory tree with file sizes and symlink labels; ignored entries appear as `(ignored)` (the marked z1 session store as `(z1 state, ignored)`) and depth, entry and byte caps are reported. Depth defaults to 3.',
+      'Render a compact directory tree with file sizes and symlink labels; ignored entries appear as `(ignored)` (the marked z1 session store as `(z1 state, ignored)`) and depth, entry and byte caps are reported. `.gitignore` applies from the repository root down to `path`; `includeIgnored: true` shows ignored and noise entries instead. Depth defaults to 3.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -182,6 +197,11 @@ const TOOL_SCHEMAS = [
       properties: {
         path: { type: 'string', description: 'Root directory; defaults to the workspace.' },
         depth: { type: 'integer', minimum: 1, maximum: 7, description: 'Levels to show; defaults to 3.' },
+        includeIgnored: {
+          type: 'boolean',
+          description:
+            'Show ignored paths and noise directories without an `(ignored)` marker (default false). The marked z1 session store is still pruned; the depth and size caps still apply.',
+        },
       },
     },
   },
@@ -349,18 +369,19 @@ const TOOL_SCHEMAS = [
   {
     name: 'process.list',
     description:
-      'List tasks with status, exit code or signal, cwd, age and output size: running ones plus the last 5 finished by default. `all: true` shows every finished task and `limit` bounds how many.',
+      'List tasks with status, exit code or signal, cwd, age and output size: running ones plus the last 5 finished by default. `all: true` shows every finished task; `limit` bounds how many finished tasks are shown whether or not `all` is set (the newest are kept), and an omitted task count is printed.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       required: [],
       properties: {
-        all: { type: 'boolean', description: 'Include every finished task (default false).' },
+        all: { type: 'boolean', description: 'Include every finished task (default false: the last 5).' },
         limit: {
           type: 'integer',
           minimum: 1,
           maximum: 200,
-          description: 'Finished tasks to show; defaults to 5.',
+          description:
+            'Finished tasks to show, newest kept; defaults to 5, and applies with `all: true` too (this many of every finished task).',
         },
       },
     },
@@ -444,7 +465,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'system.info',
     description:
-      'Report six lines: os, node, shell dialect, now with its time zone, workspace (with `(missing)` when absent) and the git root/branch. Never reports user, host or environment values.',
+      'Report six lines: os, node, shell base name and dialect (`zsh (POSIX)`), now with its time zone, workspace (with `(missing)` when absent) and the git root/branch. The shell name comes from `$SHELL`/`ComSpec`, but no path, user, host or other environment value is reported.',
     parameters: { type: 'object', additionalProperties: false, required: [], properties: {} },
   },
   {
