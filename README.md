@@ -13,7 +13,7 @@ decides how far it can reach.
 
 ## Repository and install
 
-Current version: **0.1.6** (`manifest.json`, id `com.z1.tools`).
+Current version: **0.1.7** (`manifest.json`, id `com.z1.tools`).
 
 ```sh
 git clone https://github.com/ayzitix/z1-tools ~/Projects/z1-tools
@@ -51,9 +51,9 @@ channel, and a command whose output is not text is reported as
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `read` | `{ path, offset?, limit? }` | numbered lines `1\| text`; a cut window ends with `… (truncated: lines a-b of n; call read with offset=n+1)` |
-| `write` | `{ path, content, preserveLinks? }` | `wrote <path> (<n> bytes[, broke N hard links][, kept mode 0644][, in place: kept N hard links])` |
-| `edit` | `{ path, oldText, newText, replaceAll?, preserveLinks? }` | `edited <path> (<n> replacements[, broke N hard links][, kept mode 0644][, in place: kept N hard links])` or `no change: <path> (…)` |
-| `apply_patch` | `{ patch, preserveLinks? }` | `patched <n> blocks in <m> files`, then `<path> (+a -r block lines[, broke N hard links][, in place: kept N hard links])` or `<path> (no change)` |
+| `write` | `{ path, content }` | `wrote <path> (<n> bytes[, broke N hard links][, kept mode 0644])` |
+| `edit` | `{ path, oldText, newText, replaceAll? }` | `edited <path> (<n> replacements[, broke N hard links][, kept mode 0644])` or `no change: <path> (…)` |
+| `apply_patch` | `{ patch }` | `patched <n> blocks in <m> files`, then `<path> (+a -r block lines[, broke N hard links])` or `<path> (no change)` |
 | `list` | `{ path, recursive?, maxDepth? }` | `dir p`, `file p (size)`, `link p`, each optionally `(ignored)` |
 | `glob` | `{ pattern, path? }` | sorted matching paths, one per line |
 | `grep` | `{ pattern, path?, glob?, caseSensitive?, context?, maxResults? }` | `path:line: text`, context as `path-line- text`, then a summary |
@@ -77,7 +77,7 @@ Every failure throws an `Error` that names the path or argument at fault. Tools
 that discover positions use `path:line` (`grep`), so a line from one result can
 be fed to `read`'s `offset`.
 
-`edit` also accepts Claude Code's `old_string`/`new_string` in place of
+`edit` also accepts Claude Code's `old_string`/`new_string` instead of
 `oldText`/`newText`, so a prompt written for another harness works unchanged.
 The schema does not mark either pair `required` (they are alternatives); the
 tool rejects a call with neither pair, and one that passes both pairs with
@@ -126,11 +126,13 @@ re-`stat`ed by each guard and never memoised, so a store created or removed
 mid-process is refused or released immediately. The extra `stat` costs about
 60 µs per check. Only a `z1/` carrying the marker is affected: a repository
 that genuinely has a `z1/` source directory (the SDK itself) keeps it fully
-visible and writable. Detection only covers the default `<workspace>/z1`. A
-store moved elsewhere by `Z1_SESSIONS_DIR` (or by the session package's
-fallback root outside the workspace), a renamed store, and one reached through
-the real path behind a symlinked `z1/` are not recognised and stay reachable by
-file tools, so the manifest grant is the only bound there.
+visible and writable. Detection covers the default `<workspace>/z1`, and
+`sessionRoot` resolves it, so a `z1 -> realz1` symlink is covered too: writes
+through the symlink or through its real target are both refused (reads remain
+allowed). A store moved elsewhere by `Z1_SESSIONS_DIR` (or by the session
+package's fallback root outside the workspace) and a store with another name
+are not recognised and stay reachable by file tools, so the manifest grant is
+the only bound there.
 
 ### Line endings and encoding
 
@@ -140,21 +142,24 @@ own CRLF style, normalise only the replacement to the style in force at the
 match, and leave every other line byte-for-byte identical — so a mixed-ending
 file keeps both.
 
-A NUL byte, or U+FFFD (what invalid UTF-8 becomes once the broker decoded it)
-in the first 8 KiB, marks a file as binary. `read` refuses it, `edit` and
-`apply_patch` refuse to re-encode it, `grep` skips it, and `write` will not
-verify-and-replace it. A file that genuinely contains U+FFFD is treated the same
-way: rewrite it with `write` instead of editing it.
+A NUL byte anywhere in the text, or U+FFFD (what invalid UTF-8 becomes once the
+broker decoded it), marks a file as binary. The scan covers the whole file —
+still at most 1 MiB — and not a head: one bad byte at 12 KiB stops a rewrite as
+firmly as one at byte 10. `read` refuses it, `edit` and `apply_patch` refuse to
+re-encode it, `grep` skips it, and `write` will not verify-and-replace it.
+
+A file that genuinely contains U+FFFD, as valid UTF-8 text the author meant, is
+indistinguishable from one decoded from invalid bytes, and is therefore
+**uneditable** here: no `edit` or `apply_patch` can reproduce its bytes. Replace
+the whole file with `write`, or change it with an external tool (or `shell`,
+which is not filtered).
 
 ### Write safety
 
 `write`, `edit`, `apply_patch` and `todo.write` never truncate the target: the
 content goes to a sibling temp file (`<name>.z1-tmp-<pid>-<rand>`) and is
 renamed into place, so a failure leaves the old bytes. An existing file keeps
-its mode; `todo.write` forces `0600` and creates `.z1` as `0700`. The one
-exception is the opt-in `preserveLinks: true` on a hardlinked target, which
-rewrites the inode in place (that is what was asked for) and is therefore not
-atomic.
+its mode; `todo.write` forces `0600` and creates `.z1` as `0700`.
 
 `write` additionally refuses to overwrite a file this process never read, or one
 whose bytes changed since that read (`write: read "<path>" before overwriting
@@ -164,16 +169,16 @@ workspace and resolved path, so a restart simply asks for a fresh read. This
 catches the stale-context mistake, not a concurrent writer: the hash and the
 rename are separate syscalls (see the TOCTOU note below).
 
-A target with more than one hardlink takes that same rename path by default:
-the target gets a new inode and the other names keep the old bytes, so the write
-stays atomic but the link is gone — the result says `broke N hard links`. That
-default is deliberate: a link made outside the workspace would otherwise be a
-way to rewrite a file the guard protects through a writable name.
-`preserveLinks: true` opts back into the in-place rewrite, which updates every
-name on the inode, gives up rename atomicity for that one file, and says
-`in place: kept N hard links`. The policy is shared by `write`, `edit` and
-`apply_patch`; `apply_patch` reports the count per file, after its
-`+a -r block lines`.
+A target with more than one hardlink takes that same rename path: the target
+gets a new inode and the other names keep the old bytes, so the write stays
+atomic but the link is gone — the result says `broke N hard link(s)`. That is
+the deliberate default and the only built-in path: a link made outside the
+workspace would otherwise be a way to rewrite a file the guard protects through
+a writable name, and rewriting the shared inode is the one write that could
+truncate it on a short write. `shell` remains the residual bypass, because it
+is not filtered and can still rewrite the shared inode directly. The policy is
+shared by `write`, `edit` and `apply_patch`; `apply_patch` reports the count per
+file, after its `+a -r block lines`.
 
 `apply_patch` prepares every changed file first and renames them all in one
 helper child; a failure restores the previous bytes, mode and mtime of every
@@ -241,22 +246,40 @@ how many paths they skipped; `list` and `tree` show the entry once as
 `grep` compiles the pattern with the `u` flag, is **case-sensitive by default**
 (like ripgrep; `caseSensitive: false` opts in), returns `(no matches; …)` rather
 than an empty string, ends every result with `(N matches in M files; …)`, and
-reports skipped binary, oversized and unreadable files in that summary. A
-result line (path included) is clipped near 400 characters and the whole answer
-is capped at 64 KiB.
+reports skipped binary, oversized and unreadable files in that summary.
+
+A pattern may be at most 512 characters, and shapes whose backtracking can blow
+up are rejected before the walk with `grep: pattern is too expensive; simplify
+it`: nested repetition such as `(a+)+` or `(\w+\s+)*`, ambiguous alternation
+such as `(a|ab)+` or `(.|a)+`, and a backreference to a long or repeating group.
+Matching is bounded too: a line over 16 000 characters is matched on that
+clipped head only (its tail is not searched, and the summary counts the lines),
+and the call stops after a 5 s budget with `grep: stopped after N ms; narrow the
+query`, checked between lines.
+
+The rejection is a heuristic, not a proof: a novel pattern can still be slow,
+and a single `RegExp.test` cannot be interrupted — the line clip and the time
+budget bound the damage, not the worst single line. Two distinct clips apply to
+a hit: matching sees the first 16 000 characters of a line, while a displayed
+result line (path included) is clipped near 400 characters. The whole answer is
+capped at 64 KiB.
 
 ## Limits
 
-- `read`: 1 MiB per file, 2000 lines per call, 1-based `offset`. The size and a
-  NUL in the first 8 KiB are checked with `ctx.fs.stat`/a head sniff before the
-  file is loaded, so a 4 GiB file is never read; both fail with a clear error
-  (`file is <n> bytes; use shell sed -n`, `binary file: <path>`).
+- `read`: 1 MiB per file, 2000 lines per call, 1-based `offset`. The size is
+  checked with `ctx.fs.stat` before the file is loaded, so a 4 GiB file is never
+  read; the NUL/U+FFFD scan then covers the whole text (still at most 1 MiB), not
+  a head. Both fail with a clear error (`file is <n> bytes; use shell sed -n`,
+  `binary file: <path>`).
 - `read` output: about 100 000 characters per answer and 2000 characters per
   line. A clipped line says `… +N chars` and a cut window names the next
   `offset`, so the answer has a bounded size whatever the file looks like.
 - `list`, `glob`, `grep`: depth 8, 5000 files. `glob` returns at most 1000
-  paths and 64 KiB; `grep` at most 200 matches, `context` 0–20, 1 MiB per file.
-  Truncation, depth limits and ignored paths are printed, never implied.
+  paths and 64 KiB; `grep` at most 200 matches, `context` 0–20, 1 MiB per file,
+  a 512-character pattern, a 5 s matching budget, and two distinct clips — a
+  line is matched on its first 16 000 characters and displayed clipped near 400,
+  so a line can match on text that is never printed. Truncation, depth limits
+  and ignored paths are printed, never implied.
 - `tree`: depth 7 (default 3), 3000 entries, 64 KiB.
 - `stat`: one line; `mode` is the four-digit `lstat` mode with setuid/sticky
   bits (`0755`, `4755`), `nlink=N` appears only above 1, and `mtime` is local
@@ -323,19 +346,19 @@ Known limitations, stated rather than hidden:
   racing between the hash check and the rename, can still surprise the tool; no
   Node API closes that window. The tools fail loudly rather than assuming the
   check was atomic.
-- **Hardlinks.** By default a hardlinked target is renamed like any other file,
-  so after a `write`, `edit` or `apply_patch` its other names still hold the old
-  bytes and the result reports `broke N hard links`. `preserveLinks: true`
-  rewrites the inode instead: every name sees the new bytes and that write is
-  no longer atomic.
+- **Hardlinks.** A hardlinked target is renamed like any other file, so after a
+  `write`, `edit` or `apply_patch` its other names still hold the old bytes and
+  the result reports `broke N hard link(s)`. The write stays atomic; nothing
+  updates every name on the inode, because that would also be the one
+  non-atomic write. `shell` is not filtered and can still do it.
 - **`move` across devices.** `rename` is atomic within one filesystem; an
   `EXDEV` move copies to a unique temp name and then deletes, so an interruption
   can leave both copies. A source that cannot be removed after a successful copy
   is reported, never hidden.
 - **Windows.** `rename` onto an existing file is refused there, so the atomic
   writers fall back to remove-then-rename (`EEXIST`/`EPERM`): the file is still
-  never truncated in place by the default path, but the swap is briefly
-  non-atomic. An `overwrite` move fails cleanly instead of replacing.
+  never truncated by the default path, but the swap is briefly non-atomic. An
+  `overwrite` move fails cleanly instead of replacing.
 - **Special files.** A FIFO, socket or device is reported as `other` with its
   kind in parentheses; nothing here reads or writes one.
 
