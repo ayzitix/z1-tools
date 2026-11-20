@@ -33,6 +33,11 @@ const BAD = [
   '([^x]|a)+$',
   '(\\p{L}|a)+$',
   '(\\s|\\s\\s)+$',
+  // Unbounded outer with any inner repeat still rejects, however small the
+  // inner bound looks.
+  '(a{1,9})+$',
+  '(\\d{1,3})+',
+  '(a{2,}){3}',
 ]
 
 const GOOD = [
@@ -55,6 +60,15 @@ const GOOD = [
   '(?:foo){3}',
   '\\bconst\\s+\\w+\\s*=',
   '(?<name>\\w+)',
+  // The reported false-positive corpus: ordinary bounded repeats that a model
+  // writes for source search, each matching in microseconds via matchLines.
+  '(\\d{1,3}\\.){3}\\d{1,3}',
+  '(?:[a-f0-9]{2}:){5}[a-f0-9]{2}',
+  '(\\d{3}-){2}\\d{4}',
+  // Bounded nested repeats whose division count (inner ** outer) stays small.
+  '(\\d{1,2}:){2}\\d{2}',
+  '(?:[a-z]{2}-){4}',
+  '(\\w{2}\\.){3}',
 ]
 
 test('patternCost rejects known exponential and quadratic shapes', () => {
