@@ -65,7 +65,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'write',
     description:
-      'Write a UTF-8 text file: the content goes to a sibling temp file that is renamed into place, parent directories are created and an existing file keeps its mode. Refuses to overwrite a file this process has not read, or that changed since that read, and refuses a binary target (a NUL or U+FFFD anywhere in the file) instead of re-encoding it; a hardlinked target is renamed too, which breaks its other links (they keep the old bytes) and is reported as `broke N hard link(s)` — there is no in-place option; the z1 session store is refused.',
+      'Write a UTF-8 text file: the content goes to a sibling temp file that is renamed into place, parent directories are created and an existing file keeps its mode. Refuses to overwrite a file this process has not read, or that changed since that read; a binary target (a NUL or U+FFFD anywhere in the file) is accepted only when this process\'s `read` refused exactly those bytes, and the result says `replaced a file the tools read as binary` (edit and apply_patch still refuse it); a hardlinked target is renamed too, which breaks its other links (they keep the old bytes) and is reported as `broke N hard link(s)` — there is no in-place option; the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -119,7 +119,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'list',
     description:
-      'List a directory as `dir p`, `file p (size)`, `link p` or `other p (fifo)`, `(socket)`, `(device)`, `(special)`; a file path returns that one row. Names are relative to `path`, ignored entries are labelled `(ignored)`, the walk is bounded to 8 levels and 5000 entries with the cap reported, and the marked z1 session store shows once as `(z1 state, ignored)` without descending. `.gitignore` files from the repository root down to `path` apply, so a listing of `src/` still honours a root `dist/` or `*.log`; `includeIgnored: true` shows ignored entries and noise directories anyway.',
+      'List a directory as `dir p`, `file p (size)`, `link p` or `other p (fifo)`, `(socket)`, `(device)`, `(special)`; a file path returns that one row. Names are relative to `path`, ignored entries are labelled `(ignored)`, the walk is bounded to 8 levels and 5000 entries with the cap reported, and the marked z1 session store (and any symlink alias of it) shows once as `(z1 state, ignored)` without descending. `.gitignore` files from the repository root down to `path` apply, so a listing of `src/` still honours a root `dist/` or `*.log`; `includeIgnored: true` shows ignored entries and noise directories anyway.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -139,7 +139,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'glob',
     description:
-      'Find files by glob under a root, which defaults to the workspace. `*` and `?` stop at `/` while `**` crosses it, a pattern without `/` matches the basename at any depth, and `{a,b}`/`[...]` work; `.gitignore` (from the repository root down to the search root) and noise directories are skipped (as is the marked z1 session store, counted ignored), results are sorted and capped at 1000 paths or 64 KiB, ignored paths are counted in the summary, and absolute patterns are rejected. `includeIgnored: true` searches ignored paths and noise directories as well.',
+      'Find files by glob under a root, which defaults to the workspace. `*` and `?` stop at `/` while `**` crosses it, a pattern without `/` matches the basename at any depth, and `{a,b}`/`[...]` work; `.gitignore` (from the repository root down to the search root) and noise directories are skipped (as is the marked z1 session store and its symlink aliases, counted ignored), results are sorted and capped at 1000 paths or 64 KiB, ignored paths are counted in the summary, and absolute or malformed patterns (a bare `/`, an unterminated `[`) are rejected clearly. `includeIgnored: true` searches ignored paths and noise directories as well.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -161,7 +161,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'grep',
     description:
-      'Search file contents with a JavaScript regular expression, case-sensitive by default (`caseSensitive: false` opts in); results are `path:line: text` and context lines `path-line- text`. `.gitignore` (from the repository root down to the search root), noise directories and the marked z1 session store are skipped, as are binary and >1 MiB files (all counted in the summary); `includeIgnored: true` searches ignored paths and noise directories too; a pattern over 512 characters or one whose shape can backtrack catastrophically (nested quantifiers such as `(a+)+`, ambiguous alternation, a large backreference) is rejected up front, lines over 16 000 characters are matched on the clipped head only, and matching stops after a 5 s budget with `grep: stopped after N ms; narrow the query`. Result lines are clipped near 400 characters and a result is capped at 64 KiB.',
+      'Search file contents with a JavaScript regular expression, case-sensitive by default (`caseSensitive: false` opts in); results are `path:line: text` and context lines `path-line- text`. `.gitignore` (from the repository root down to the search root), noise directories and the marked z1 session store (and its aliases) are skipped, as are binary (NUL) and >1 MiB files (all counted in the summary); `includeIgnored: true` searches ignored paths and noise directories too; a pattern over 512 characters or one whose shape can backtrack catastrophically (nested quantifiers such as `(a+)+` or `(a?){25}a{25}`, ambiguous alternation including `(\\w|\\w\\w)+`, a large backreference) is rejected up front, lines over 16 000 characters are matched on the clipped head only, matching stops after a 5 s budget and each 1 s match slice is terminated (either says `grep: stopped after N ms; narrow the query`). A result path is clipped near 200 characters and its content near 400, and the answer is capped at 64 KiB.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -189,7 +189,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'tree',
     description:
-      'Render a compact directory tree with file sizes and symlink labels; ignored entries appear as `(ignored)` (the marked z1 session store as `(z1 state, ignored)`) and depth, entry and byte caps are reported. `.gitignore` applies from the repository root down to `path`; `includeIgnored: true` shows ignored and noise entries instead. Depth defaults to 3.',
+      'Render a compact directory tree with file sizes and symlink labels; ignored entries appear as `(ignored)` (the marked z1 session store and its aliases as `(z1 state, ignored)`) and depth, entry and byte caps are reported. `.gitignore` applies from the repository root down to `path`; `includeIgnored: true` shows ignored and noise entries instead. Depth defaults to 3.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -208,7 +208,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'stat',
     description:
-      'Report one entry (`lstat`) as `type size mtime [mode] [nlink=N] path`. A symlink adds `-> target` (and `(dangling)`), a FIFO, socket or device is `other`; `mode` is four digits, `nlink` appears only above 1 and mtime is local ISO 8601 with its UTC offset.',
+      'Report one entry (`lstat`) as `type size mtime [mode] [nlink=N] path`. A symlink adds `-> target` and `(dangling)` when the target is gone, `(loop)` when the link chain does not terminate, or `(unresolvable: CODE)` for another failure; a FIFO, socket or device is `other`; `mode` is four digits, `nlink` appears only above 1 and mtime is local ISO 8601 with its UTC offset.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -219,7 +219,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'mkdir',
     description:
-      'Create a directory, with parents unless `recursive: false`. An existing directory reports `exists`; an existing file and the z1 session store are refused.',
+      'Create a directory, with parents unless `recursive: false`. An existing directory reports `exists`; an existing file and the z1 session store are refused. A final symlink is decided by its target: an inside directory is `exists`, an inside file is refused, a dangling link says its target does not exist, and an outside target is `path escapes workspace`.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -242,7 +242,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'move',
     description:
-      'Move or rename one entry inside the workspace, creating the destination parent; a symlink moves as the link itself and an existing destination needs `overwrite: true`. Same-device moves rename; across devices the entry is copied and the source removed, so an interruption can leave both. Either end in the z1 session store is refused.',
+      'Move or rename one entry inside the workspace, creating the destination parent; a symlink moves as the link itself and an existing destination needs `overwrite: true`. Same-device moves rename; across devices the entry is copied and the source removed, so an interruption can leave both. The destination parent is re-resolved and its identity verified immediately before the rename, so a parent swapped for a symlink after the first check is refused. Either end in the z1 session store is refused.',
     parameters: {
       type: 'object',
       additionalProperties: false,

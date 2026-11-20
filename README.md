@@ -13,7 +13,7 @@ decides how far it can reach.
 
 ## Repository and install
 
-Current version: **0.1.8** (`manifest.json`, id `com.z1.tools`).
+Current version: **0.1.9** (`manifest.json`, id `com.z1.tools`).
 
 ```sh
 git clone https://github.com/ayzitix/z1-tools ~/Projects/z1-tools
@@ -51,14 +51,14 @@ channel, and a command whose output is not text is reported as
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `read` | `{ path, offset?, limit? }` | numbered lines `1\| text`; a cut window ends with `… (truncated: lines a-b of n; call read with offset=n+1)` |
-| `write` | `{ path, content }` | `wrote <path> (<n> bytes[, broke N hard links][, kept mode 0644])` |
-| `edit` | `{ path, oldText, newText, replaceAll? }` | `edited <path> (<n> replacements[, broke N hard links][, kept mode 0644])` or `no change: <path> (…)` |
-| `apply_patch` | `{ patch }` | `patched <n> blocks in <m> files`, then `<path> (+a -r block lines[, broke N hard links])` or `<path> (no change)` |
-| `list` | `{ path, recursive?, maxDepth?, includeIgnored? }` | `dir p`, `file p (size)`, `link p`, `other p (fifo)`, each optionally `(ignored)` |
-| `glob` | `{ pattern, path?, includeIgnored? }` | sorted matching paths, one per line |
-| `grep` | `{ pattern, path?, glob?, caseSensitive?, context?, maxResults?, includeIgnored? }` | `path:line: text`, context as `path-line- text`, then a summary |
+| `write` | `{ path, content }` | `wrote <path> (<n> bytes[, replaced a file the tools read as binary][, broke N hard links][, kept mode M])` |
+| `edit` | `{ path, oldText, newText, replaceAll? }` | `edited <path> (<n> replacements[, broke N hard links][, kept mode M])` or `no change: <path> (…)` |
+| `apply_patch` | `{ patch }` | `patched <n> blocks in <m> files[ (k blocks made no change)]`, then `<path> (+a -r block lines[, broke N hard links])` or `<path> (no change)` |
+| `list` | `{ path, recursive?, maxDepth?, includeIgnored? }` | `dir p`, `file p (size)`, `link p`, `other p (fifo)`, each optionally `(ignored)`; a marked session store or a symlink alias of it is `(z1 state, ignored)` |
+| `glob` | `{ pattern, path?, includeIgnored? }` | sorted matching paths, one per line, then `… (N files walked[; M ignored paths skipped])` |
+| `grep` | `{ pattern, path?, glob?, caseSensitive?, context?, maxResults?, includeIgnored? }` | `path:line: text`, context as `path-line- text`, then a summary with the same walk counters |
 | `tree` | `{ path?, depth?, includeIgnored? }` | `├──`/`└──` tree with sizes and symlink labels |
-| `stat` | `{ path }` | `type size mtime [mode] [nlink=N] path [-> target]` |
+| `stat` | `{ path }` | `type size mtime [mode] [nlink=N] path [-> target] [(dangling\|loop\|unresolvable: CODE)]` |
 | `mkdir` | `{ path, mode?, recursive? }` | `created <path>[ with mode 0755]` (the real mode after umask) or `exists <path> (directory)` |
 | `move` | `{ from, to, overwrite? }` | `moved <from> -> <to>[ (copied across devices)][, replaced the previous entry]` |
 | `shell` | `{ command, args?, cwd?, timeoutMs?, stdin?, env?, maxOutputBytes? }` | `exit <code>` / `killed <signal> (…)`, then stdout/stderr |
@@ -87,13 +87,22 @@ different values.
 
 `ctx.workspace` is the project folder and the only place these tools may touch.
 Relative paths resolve there; an absolute path is accepted only when its real
-path — symlinks followed — is the workspace or below it. A target that does not
-exist yet is judged by the real path of its nearest existing parent, so `..`
-escapes, absolute paths outside and symlinks pointing outside all fail with
-`path escapes workspace: <path>`. The check applies to `read`, `write`, `edit`,
-`apply_patch`, `list`, `glob`, `grep`, `tree`, `stat`, `mkdir`, `move` (both
-ends), `shell.cwd`, `process.start.cwd` and the git pathspec; only
-`system.info` reports the workspace path itself.
+path — symlinks followed — is the workspace or below it. The workspace itself
+is resolved to its real path once, at first use; if that cannot be resolved the
+tool fails instead of comparing against the lexical string (a workspace that is
+itself a symlink would otherwise reject every valid path or trust an invalid
+one). A target that does not exist yet is judged by the real path of its nearest
+existing parent, so `..` escapes, absolute paths outside and symlinks pointing
+outside all fail with `path escapes workspace: <path>`. A **dangling** symlink
+is resolved component by component, so a target such as `hop/../target` is
+judged the way the kernel would resolve it (enter `hop`, then `..`) rather than
+by a lexical `path.resolve` that cancels `hop` away; a dangling link is inside
+only when the path its target would have is inside. Every walk asserts its base
+is below the real root, so a caller cannot bypass the check with a raw path.
+The check applies to `read`, `write`, `edit`, `apply_patch`, `list`, `glob`,
+`grep`, `tree`, `stat`, `mkdir`, `move` (both ends), `shell.cwd`,
+`process.start.cwd` and the git pathspec; only `system.info` reports the
+workspace path itself.
 
 Results display a workspace-relative path when the target is inside the
 workspace (`notes/a.txt`, `.` for the root) and an absolute path otherwise.
@@ -101,17 +110,32 @@ workspace (`notes/a.txt`, `.` for the root) and an absolute path otherwise.
 
 `stat`, `mkdir` and `move` use a lexical resolution instead: the parent is
 resolved and contained, the last component is kept as written, so they act on
-the entry the model named (a link is a link) rather than on its target.
+the entry the model named (a link is a link) rather than on its target. `stat`
+therefore reports a symlink as itself. `mkdir` still follows the final link to
+decide: a link to an inside directory is `exists`, a link to an inside file is
+refused as not a directory, a dangling link is refused with a message that does
+not suggest `recursive: true` (which cannot fix it), and a link whose target is
+outside is `path escapes workspace`. `move` re-resolves the destination parent
+immediately before renaming and the helper verifies the parent's `dev:ino`, so a
+parent swapped for a symlink after the first check is refused instead of
+redirecting the entry.
 
 ### z1's own state
 
 A project's transcripts live in `<workspace>/z1`, and the marker file
 `.z1-sessions` in it says the folder is z1's, not the project's (the session
 package's default is `<repo>/z1`; see `@z1/session/paths`). These tools treat
-that folder as z1's own state: `list` and `tree` show it once as
-`z1 (z1 state, ignored)` and never descend, `glob` and `grep` skip it and count
-it as one ignored path, and a base rooted inside it answers
+that folder as z1's own state: `list` and `tree` show each name of it once as
+`(z1 state, ignored)` and never descend, `glob` and `grep` skip it and count each
+name as one ignored path, and a base rooted inside it answers
 `(z1 state: not project content; transcripts use /sessions)`.
+
+A symlink alias of the store is the store. The walk resolves a link entry's
+target (once, from the target the broker already supplied) and marks it too, so
+both a `z1 -> realz1` link and an `alias -> z1` link are hidden by `list`,
+`tree`, `glob` and `grep`; the row keeps its real kind (`link alias`, not
+`dir alias`). The real folder and each alias are separate names, so a walk shows
+one row per name, all marked ignored.
 
 Reading it is allowed: `read` returns its files (so a session's own `meta.json`
 or transcript can be inspected) and `stat` still reports its metadata, so size
@@ -146,28 +170,41 @@ A NUL byte anywhere in the text, or U+FFFD (what invalid UTF-8 becomes once the
 broker decoded it), marks a file as binary. The scan covers the whole file —
 still at most 1 MiB — and not a head: one bad byte at 12 KiB stops a rewrite as
 firmly as one at byte 10. `read` refuses it, `edit` and `apply_patch` refuse to
-re-encode it, `grep` skips it, and `write` will not verify-and-replace it.
+re-encode it, `grep` skips a file containing a NUL, and `write` will not
+verify-and-replace it unless this process's `read` was refused on exactly those
+bytes.
 
 A file that genuinely contains U+FFFD, as valid UTF-8 text the author meant, is
 indistinguishable from one decoded from invalid bytes, and is therefore
 **uneditable** here: no `edit` or `apply_patch` can reproduce its bytes. Replace
-the whole file with `write`, or change it with an external tool (or `shell`,
-which is not filtered).
+the whole file with `write` — a `read` that refused it as binary is the
+permission `write` accepts, and the result says so — or change it with an
+external tool (or `shell`, which is not filtered). The refusal is recorded with
+a sha256: if the bytes change after that refused read, `write` asks for a fresh
+read first.
 
 ### Write safety
 
 `write`, `edit`, `apply_patch` and `todo.write` never truncate the target: the
 content goes to a sibling temp file (`<name>.z1-tmp-<pid>-<rand>`) and is
 renamed into place, so a failure leaves the old bytes. An existing file keeps
-its mode; `todo.write` forces `0600` and creates `.z1` as `0700`.
+its mode; `todo.write` forces `0600` and creates `.z1` as `0700`. A kept mode is
+reported only when it is not an ordinary `0644` file or `0755` executable, and a
+result the owner cannot read (no owner read bit, e.g. `0000`) always adds a
+`warning: the resulting file is not readable` note.
 
 `write` additionally refuses to overwrite a file this process never read, or one
 whose bytes changed since that read (`write: read "<path>" before overwriting
 it`, `write: "<path>" changed since read`). `read` records a sha256 of what it
-returned; `write` and `edit` refresh it. The map is per process and keyed by
-workspace and resolved path, so a restart simply asks for a fresh read. This
-catches the stale-context mistake, not a concurrent writer: the hash and the
-rename are separate syscalls (see the TOCTOU note below).
+returned; `write` and `edit` refresh it. The one exception is a file the same
+process's `read` refused as binary: that refusal is recorded with its hash and
+`write` may replace exactly those bytes (`…, replaced a file the tools read as
+binary`), because otherwise the README's own recovery — rewrite it with
+`write` — would be impossible; `edit` and `apply_patch` still refuse it. The map
+is per process and keyed by workspace and resolved path, so a restart simply
+asks for a fresh read. This catches the stale-context mistake, not a concurrent
+writer: the hash and the rename are separate syscalls (see the TOCTOU note
+below).
 
 A target with more than one hardlink takes that same rename path: the target
 gets a new inode and the other names keep the old bytes, so the write stays
@@ -187,10 +224,15 @@ If a later rename fails, files already swapped are restored on a **best-effort**
 basis — old bytes, mode and mtime are rewritten, the helper swallows a restore
 failure, and a restored file is a new inode, so hard links are not reattached.
 An interrupted commit can therefore leave a mix of old and new files; it is not
-a whole-patch rollback. Patch markers are recognised by prefix, not by context:
-a quoted line that begins with `*** Begin Patch`, `*** End Patch`, `<<<<<<<` or
-`>>>>>>>` is read as an envelope marker, so text containing such a line cannot
-be patched in — rewrite the whole file with `write` instead.
+a whole-patch rollback. The reported `+a -r block lines` are a line diff of the
+applied region (common prefix and suffix trimmed), not the size of the quoted
+halves, so a block that quotes text it does not change reports `0` and the
+header counts only changed blocks and changed files, adding
+`(k blocks made no change)` for the rest. Patch markers are recognised by
+prefix, not by context: a quoted line that begins with `*** Begin Patch`,
+`*** End Patch`, `<<<<<<<` or `>>>>>>>` is read as an envelope marker, so text
+containing such a line cannot be patched in — rewrite the whole file with
+`write` instead.
 
 ### Todo list
 
@@ -244,39 +286,54 @@ closing z1 kills it.
 `{a,b}` alternates and `[...]` is a character class. A pattern **without a `/`**
 is matched against the basename at any depth (`*.md` finds `docs/a/b.md`); a
 pattern containing `/` is matched against the path relative to the root.
-Absolute patterns are rejected — pass a relative `pattern` plus a `path` root.
+Absolute patterns are rejected — pass a relative `pattern` plus a `path` root —
+and a pattern with an unterminated `[` is a clear `not a valid glob` rather than
+a silent literal (`glob("/")` is invalid, not "absolute").
 
 `.gitignore` is honoured from the repository root (the nearest ancestor with a
 `.git` entry) down to the search root, and from every directory visited
 (directory patterns, `!` negation and `**` included), so a search of `src/`
 still skips a root `dist/` or `*.log`. `.git`, `node_modules` and `.z1/out` are
-always pruned, as is a marked `z1/` session store. `glob` and `grep` skip those
-silently and say how many paths they skipped; `list` and `tree` show the entry
-once as `(ignored)` and never descend. `includeIgnored: true` on any of the four
-tools disables both the ignore rules and the noise-directory prune (the marked
-session store is still hidden; the caps still apply). Caps are counted in files,
-not directories.
+always pruned, as is a marked `z1/` session store and each symlink alias of it.
+`glob` and `grep` skip those silently and report the shared walk counters;
+`list` and `tree` show the entry once as `(ignored)` (the session store as
+`(z1 state, ignored)`) and never descend. `includeIgnored: true` on any of the
+four tools disables both the ignore rules and the noise-directory prune (the
+marked session store and its aliases are still hidden; the caps still apply).
+Caps are counted in files, not directories.
 
 `grep` compiles the pattern with the `u` flag, is **case-sensitive by default**
 (like ripgrep; `caseSensitive: false` opts in), returns `(no matches; …)` rather
-than an empty string, ends every result with `(N matches in M files; …)`, and
-reports skipped binary, oversized and unreadable files in that summary.
+than an empty string, ends every result with a summary of matches, files and the
+walk counters, and reports skipped binary, oversized and unreadable files there.
+
+`glob` and `grep` share one walk-counter shape, in the same words: `N files
+walked` (entries the walk collected), `M ignored paths skipped` (pruned by
+`.gitignore`, a noise directory or the session store), and for `grep` also `K
+files searched` (files actually read after the pattern/glob filter). `glob`
+prints them after its matches; `grep` puts them in its summary, so the same tree
+yields the same walked and ignored numbers from either tool.
 
 A pattern may be at most 512 characters, and shapes whose backtracking can blow
 up are rejected before the walk with `grep: pattern is too expensive; simplify
-it`: nested repetition such as `(a+)+` or `(\w+\s+)*`, ambiguous alternation
-such as `(a|ab)+` or `(.|a)+`, and a backreference to a long or repeating group.
-Matching is bounded too: a line over 16 000 characters is matched on that
-clipped head only (its tail is not searched, and the summary counts the lines),
-and the call stops after a 5 s budget with `grep: stopped after N ms; narrow the
-query`, checked between lines.
+it`: nested repetition such as `(a+)+`, `(a?){25}a{25}` or `(\w+\s+)*`,
+ambiguous alternation such as `(a|ab)+`, `(a|a)+`, `(\w|\w\w)+` or `(.|a)+`
+(non-capturing groups are compared by their own body, and `\w`/`\d`/`\s`,
+negated classes and `\p{…}` count as first characters), and a backreference to a
+long or repeating group. Matching is bounded too: a line over 16 000 characters
+is matched on that clipped head only (its tail is not searched, and the summary
+counts the lines), the call stops after a 5 s budget with `grep: stopped after N
+ms; narrow the query`, and each match slice has a 1 s watchdog. The match runs
+in a `node:vm` context under `runInContext`'s timeout (allowed by the worker's
+permission model, unlike `worker_threads`), so one line that slips past the
+heuristic and backtracks for minutes is terminated at the slice deadline and
+reported with the same stopped message instead of pinning the worker.
 
-The rejection is a heuristic, not a proof: a novel pattern can still be slow,
-and a single `RegExp.test` cannot be interrupted — the line clip and the time
-budget bound the damage, not the worst single line. Two distinct clips apply to
-a hit: matching sees the first 16 000 characters of a line, while a displayed
-result line (path included) is clipped near 400 characters. The whole answer is
-capped at 64 KiB.
+The rejection is a heuristic, not a proof: a novel pattern can still be slow up
+to one slice, and a hit beyond the 16 000-character head is not searched. Two
+display clips apply to a hit, on separate budgets: a result path is clipped near
+200 characters and its content near 400, so a long path cannot leave only 120
+characters of content. The whole answer is capped at 64 KiB.
 
 ## Limits
 
@@ -290,21 +347,30 @@ capped at 64 KiB.
   `offset`, so the answer has a bounded size whatever the file looks like.
 - `list`, `glob`, `grep`: depth 8, 5000 files. `glob` returns at most 1000
   paths and 64 KiB; `grep` at most 200 matches, `context` 0–20, 1 MiB per file,
-  a 512-character pattern, a 5 s matching budget, and two distinct clips — a
-  line is matched on its first 16 000 characters and displayed clipped near 400,
-  so a line can match on text that is never printed. Truncation, depth limits
-  and ignored paths are printed, never implied.
+  a 512-character pattern, a 5 s matching budget with a 1 s per-slice watchdog,
+  and separate display clips — a line is matched on its first 16 000
+  characters, a result path is clipped near 200 and its content near 400, so a
+  line can match on text that is never printed. Truncation, depth limits,
+  walked/searched files and ignored paths are printed, never implied.
 - `tree`: depth 7 (default 3), 3000 entries, 64 KiB.
 - `stat`: one line; `mode` is the four-digit `lstat` mode with setuid/sticky
   bits (`0755`, `4755`), `nlink=N` appears only above 1, and `mtime` is local
-  ISO 8601 with its UTC offset (`2026-11-15T16:09:54.553+02:00`).
+  ISO 8601 with its UTC offset (`2026-11-15T16:09:54.553+02:00`). A symlink adds
+  `-> target` and one of `(dangling)` (target missing), `(loop)` (the link
+  chain does not terminate) or `(unresolvable: CODE)`; a loop is not reported as
+  dangling.
 - `mkdir`: `mode` is an integer 0–4095, `recursive` defaults to true. The result
   reports the mode the directory really got, so a requested `0777` under umask
   `022` says `with mode 0755`; the process umask is not visible to the worker.
   An existing directory is success (`exists … (directory)`); an existing file,
-  FIFO or device is refused; with `recursive: false` the parent must exist.
+  FIFO or device is refused; with `recursive: false` the parent must exist. A
+  final symlink is decided by its target: inside directory -> `exists`, inside
+  file -> refused, dangling -> explicit "target does not exist" (never the
+  misleading "pass recursive: true"), outside -> `path escapes workspace`.
 - `move`: an existing destination needs `overwrite: true` — a replacement is
-  never implied. A directory is never merged into an existing one.
+  never implied. A directory is never merged into an existing one. The parent is
+  re-resolved and its `dev:ino` verified by the helper immediately before the
+  rename, so a parent swapped for a symlink after the first check is refused.
 - `shell`: 30 s by default, 300 s maximum; argv only, never a shell string.
   `maxOutputBytes` is 1–5 242 880 and defaults to 1 MiB. `stdin` is written once
   and then closed (stdin is closed when omitted, so a prompt sees EOF instead of
@@ -340,8 +406,14 @@ follow one: `list` shows `link <path>`, `tree` shows `name -> target` or
 `name (symlink)`, and only real directories are entered, so `glob`, `grep` and
 `tree` cannot be steered out of the workspace by a link. `stat` uses `lstat`, so
 it reports the link itself plus `-> target`, marked `(dangling)` when the target
-is gone. `move` moves the link, not its target. A path that resolves through a
-symlink to the outside is refused by the containment check before use.
+is gone, `(loop)` when the chain does not terminate, or `(unresolvable: CODE)`
+for another `stat` failure. `move` moves the link, not its target. `mkdir` is
+the exception: it must follow the final link to decide whether a directory
+already exists, so it contains the target first and refuses an outside one. A
+path that resolves through a symlink to the outside is refused by the
+containment check before use; a dangling link is judged by the path its target
+would have, resolved component by component rather than by a lexical `..`
+shortcut.
 
 ## stat, move and the helpers
 
@@ -349,19 +421,29 @@ The broker exposes `fs.read`/`fs.write`/`fs.list`/`fs.stat`, and the worker runs
 under Node's permission model, which denies `realpath`, `rename` and `readFile`
 even on write-granted paths. `stat` therefore uses a small `lstat` helper (the
 broker's `stat` knows no mode, link count or special file), while path
-containment (`realpath`), `move` (`rename`, with an `EXDEV` copy-then-delete
-fallback) and the atomic temp-file renames run minimal `node -e` helpers through
-`ctx.process.run`: argv array, no shell string, no dependency. `mkdir`, `write`
-and `unlink` use `node:fs`/the broker, which the write grant allows. Reads and
-writes still go through the broker, so grants and denials stay auditable.
+containment (`realpath`-style component resolution), `move` (`rename`, with an
+`EXDEV` copy-then-delete fallback) and the atomic temp-file renames run minimal
+`node -e` helpers through `ctx.process.run`: argv array, no shell string, no
+dependency. The `lstat` helper also returns `loop`/`unresolvable` for a
+symlink and a `dev:ino` identity, which `move` hands to its rename helper to
+verify the destination parent has not been swapped. A helper's stderr is
+clipped to its error line before it is wrapped in a tool error, so a failure
+names the path and the reason, not a 15-line `[eval]` stack. When the `lstat`
+helper cannot run at all, `stat` asks the broker's `list` for the entry type
+(which does not follow links); if even that is unavailable it reports `unknown`
+rather than the target type the broker's link-following `stat` would report.
+`mkdir`, `write` and `unlink` use `node:fs`/the broker, which the write grant
+allows. Reads and writes still go through the broker, so grants and denials
+stay auditable.
 
 Known limitations, stated rather than hidden:
 
 - **TOCTOU.** Containment, the read-before-overwrite hash and the rename are
-  separate syscalls. A parent directory swapped for a symlink, or a writer
-  racing between the hash check and the rename, can still surprise the tool; no
-  Node API closes that window. The tools fail loudly rather than assuming the
-  check was atomic.
+  separate syscalls. A writer racing between the hash check and the rename can
+  still surprise the tool; no Node API closes that window. `move` narrows its
+  own window — the parent is re-resolved just before the helper and the helper
+  checks `dev:ino` — but the final check and `rename` are still two syscalls.
+  The tools fail loudly rather than assuming the check was atomic.
 - **Hardlinks.** A hardlinked target is renamed like any other file, so after a
   `write`, `edit` or `apply_patch` its other names still hold the old bytes and
   the result reports `broke N hard link(s)`. The write stays atomic; nothing
@@ -417,10 +499,27 @@ z1 run graph.json --modules-dir /tmp/z1-modules --approve ask
 Any graph node that calls the run's tool service (for example `z1.agent.loop`)
 now sees the table above.
 
+## Tests
+
+There is no `package.json` and no dependency to install: the suite is plain
+`node:test` files under `tests/`, driving the real `lib/*` tools through a fake
+worker context (`ctx.workspace`, a broker-shaped `ctx.fs` over real `node:fs`
+in a fresh `mkdtemp`, and `ctx.process.run` spawning the real helpers). Every
+test builds its own temp workspace and removes it, so nothing touches the clone
+or the home directory. Run all of it with:
+
+```sh
+node --test tests/
+```
+
+The suite is the regression net for the containment, dangling-symlink, `move`
+parent, binary-write, `stat` loop, `mkdir` symlink and reporting fixes described
+above; each file names the behaviour it pins.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The module declares `"license": "MIT"` in
 `manifest.json`; the copyright holder is `ayzitix` (2026).
 
-No test suite is included in this repository, and the module is a tools service
-only: it ships no host code and no dependencies.
+The module is a tools service only: it ships no host code and no runtime
+dependencies.
