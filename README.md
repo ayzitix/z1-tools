@@ -290,6 +290,21 @@ Absolute patterns are rejected — pass a relative `pattern` plus a `path` root 
 and a pattern with an unterminated `[` is a clear `not a valid glob` rather than
 a silent literal (`glob("/")` is invalid, not "absolute").
 
+A glob is compiled to a regex, so shapes whose backtracking can blow up are
+refused before the walk with `glob.pattern is too expensive; simplify the
+alternations or wildcards` (`grep.glob is too expensive` for the file filter).
+Every glob is priced as `alternatives × C(200 + stars, stars)`: the ways its
+brace branches and its star split points can divide a 200-character name. A
+price above 8 million is refused, which keeps three stars with a few brace
+groups (the busiest shape a model writes) and refuses the four-star cliff,
+measured at 1.3 s on such a name. A pattern longer than 1024 characters is
+refused before it is priced or compiled (`glob.pattern is too long (N chars,
+limit 1024)`): the price scan and the translation both look ahead for a closing
+`}`/`]`, so a pattern made of openers is quadratic in its own length. A
+`.gitignore` line of either shape is skipped instead of compiled, and the answer
+says `… (ignored N unsafe .gitignore rules)`: the rest of the file still
+applies, and the paths the line would have pruned are visibly not pruned.
+
 `.gitignore` is honoured from the repository root (the nearest ancestor with a
 `.git` entry) down to the search root, and from every directory visited
 (directory patterns, `!` negation and `**` included), so a search of `src/`
@@ -404,16 +419,19 @@ characters of content. The whole answer is capped at 64 KiB.
 The broker reports a symlink as its own entry (`type: "symlink"`). Walks never
 follow one: `list` shows `link <path>`, `tree` shows `name -> target` or
 `name (symlink)`, and only real directories are entered, so `glob`, `grep` and
-`tree` cannot be steered out of the workspace by a link. `stat` uses `lstat`, so
-it reports the link itself plus `-> target`, marked `(dangling)` when the target
-is gone, `(loop)` when the chain does not terminate, or `(unresolvable: CODE)`
-for another `stat` failure. `move` moves the link, not its target. `mkdir` is
-the exception: it must follow the final link to decide whether a directory
-already exists, so it contains the target first and refuses an outside one. A
-path that resolves through a symlink to the outside is refused by the
-containment check before use; a dangling link is judged by the path its target
-would have, resolved component by component rather than by a lexical `..`
-shortcut.
+`tree` cannot be steered out of the workspace by a link. A link that resolves to
+a directory is still counted as a directory rather than as a file of unknown
+size, so the walk counters of `glob` and `grep` agree, and `tree` marks a target
+outside the workspace: `name -> target (outside workspace)`. `stat` uses
+`lstat`, so it reports the link itself plus `-> target`, marked `(dangling)`
+when the target is gone, `(loop)` when the chain does not terminate, or
+`(unresolvable: CODE)` for another `stat` failure. `move` moves the link, not
+its target. `mkdir` is the exception: it must follow the final link to decide
+whether a directory already exists, so it contains the target first and refuses
+an outside one. A path that resolves through a symlink to the outside is
+refused by the containment check before use; a dangling link is judged by the
+path its target would have, resolved component by component rather than by a
+lexical `..` shortcut.
 
 ## stat, move and the helpers
 

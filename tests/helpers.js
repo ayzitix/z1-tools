@@ -13,10 +13,13 @@
  * `cannot <op> "<path>": <CODE>` so the tools' prefix-stripping is exercised.
  */
 
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import * as fsp from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /** Fresh directory under the system temp dir; caller removes it. */
 export async function makeTemp(prefix = 'z1-tools-') {
@@ -183,6 +186,20 @@ export async function writeFile(root, name, content) {
 export async function symlink(target, link) {
   await fsp.mkdir(join(link, '..'), { recursive: true })
   await fsp.symlink(target, link)
+  return link
+}
+
+/**
+ * `link` as a directory junction to `target`.
+ *
+ * A junction needs no Developer Mode, so this is the link a Windows worker can
+ * actually meet; a host without `mklink` (or a filesystem that refuses it)
+ * rejects, and the test skips with that reason.
+ */
+export async function junction(target, link) {
+  if (process.platform !== 'win32') throw new Error('directory junctions are Windows-only')
+  await fsp.mkdir(join(link, '..'), { recursive: true })
+  await execFileAsync('cmd', ['/c', 'mklink', '/J', link, target])
   return link
 }
 

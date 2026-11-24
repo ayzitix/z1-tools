@@ -22,6 +22,7 @@ import {
 } from '../lib/search.js'
 import {
   cleanup,
+  junction,
   makeCtx,
   makeTemp,
   rejection,
@@ -201,5 +202,77 @@ test('the stat fallback reports unknown rather than a symlink target type', asyn
     const listedCtx = makeCtx(workspace, { run: denyStatHelper })
     const honest = await statTool(listedCtx, { path: 'link' })
     assert.match(honest, /^symlink /)
+  })
+})
+
+test('a link to a directory is counted as a directory, and its outside target is named', async (t) => {
+  const base = await makeTemp()
+  const workspace = join(base, 'ws')
+  const outside = join(base, 'outside')
+  try {
+    await mkdir(workspace, { recursive: true })
+    await mkdir(outside, { recursive: true })
+    await writeFile(workspace, 'f.txt', 'x\n')
+    await writeFile(outside, 'secret.txt', 'secret\n')
+    try {
+      await junction(outside, join(workspace, 'j'))
+    } catch (error) {
+      // A junction needs no Developer Mode, but a host or filesystem may still
+      // refuse it; the counters cannot be pinned without one.
+      t.skip(`directory junction unavailable: ${error.message}`)
+      return
+    }
+    await mkdir(join(workspace, 'sub'), { recursive: true })
+    const ctx = makeCtx(workspace)
+
+    // The link stands for a directory, not for a file of unknown size: both
+    // searches must count the same one file, or the numbers mean nothing.
+    const globOut = await globTool(ctx, { pattern: '**/*' })
+    const grepOut = await grepTool(ctx, { pattern: 'x' })
+    assert.match(globOut, /… \(1 file walked\)$/)
+    assert.match(grepOut, /1 file walked; 1 file searched/)
+    // The walk never descends through the link, so nothing outside is read.
+    assert.doesNotMatch(globOut, /secret\.txt/)
+    assert.doesNotMatch(grepOut, /secret/)
+
+    // `tree` keeps the target but says it is not project content.
+    const treeOut = await treeTool(ctx, {})
+    assert.match(treeOut, /j -> .+ \(outside workspace\)$/m)
+
+    // A junction to a directory inside the workspace is ordinary: no marker.
+    await junction(join(workspace, 'sub'), join(workspace, 'inner'))
+    const innerTree = await treeTool(ctx, {})
+    assert.match(innerTree, /inner -> .+$/m)
+    assert.doesNotMatch(innerTree, /inner -> .+ \(outside workspace\)/)
+  } finally {
+    await cleanup(base)
+  }
+})
+
+test('tree reads a junction target with its kernel prefix, inside or outside', async () => {
+  await withWorkspace(async (workspace) => {
+    await writeFile(workspace, 'sub/keep.txt', 'x\n')
+    const link = (name, target) => ({
+      name,
+      path: join(workspace, name),
+      type: 'symlink',
+      target,
+    })
+    // A junction's target is reported as `\?\…` (or `\??\…`); the comparison
+    // must strip that, or a link to a directory inside the workspace would be
+    // labelled as an escape. `bs` spells the prefix without fighting escaping.
+    const bs = String.fromCharCode(92)
+    const ctx = makeCtx(workspace, {
+      list: async () => ({
+        entries: [
+          link('inside', `${bs}${bs}?${bs}${join(workspace, 'sub')}`),
+          link('outside', `${bs}??${bs}${join(workspace, '..', 'elsewhere')}`),
+        ],
+      }),
+    })
+    const treeOut = await treeTool(ctx, {})
+    assert.match(treeOut, /inside -> .*\n/m)
+    assert.doesNotMatch(treeOut, /inside -> .*\(outside workspace\)/)
+    assert.match(treeOut, /outside -> .+ \(outside workspace\)$/m)
   })
 })
